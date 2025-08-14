@@ -26,6 +26,16 @@ logger = get_logger(__name__)
 # Legacy error type alias for backward compatibility
 ToolError = ValidationError
 
+# ----------------------------------------------------------------------
+# JSON-safe type aliases to produce valid JSON Schema for n8n
+# (avoid List[Any] which yields "array schema missing items")
+JSONScalar = Union[str, int, float, bool, None]
+# Domain clause like ["field", "operator", value]
+DomainClause = List[Union[str, JSONScalar, List[JSONScalar]]]
+# Full domain can be a string (JSON/Python) or a list mixing operators and clauses
+DomainType = Optional[Union[str, List[Union[str, DomainClause]]]]
+# ----------------------------------------------------------------------
+
 
 class OdooToolHandler:
     """Handles MCP tool requests for Odoo operations."""
@@ -384,7 +394,7 @@ class OdooToolHandler:
         @self.app.tool()
         async def search_records(
             model: str,
-            domain: Optional[Union[str, List[Union[str, List[Any]]]]] = None,
+            domain: DomainType = None,
             fields: Optional[Union[str, List[str]]] = None,
             limit: int = 10,
             offset: int = 0,
@@ -551,8 +561,8 @@ class OdooToolHandler:
     async def _handle_search_tool(
         self,
         model: str,
-        domain: Optional[Union[str, List[Union[str, List[Any]]]]],
-        fields: Optional[List[str]],
+        domain: DomainType,
+        fields: Optional[Union[str, List[str]]],
         limit: int,
         offset: int,
         order: Optional[str],
@@ -568,7 +578,7 @@ class OdooToolHandler:
                     raise ValidationError("Not authenticated with Odoo")
 
                 # Handle domain parameter - can be string or list
-                parsed_domain = []
+                parsed_domain: List[Any] = []
                 if domain is not None:
                     if isinstance(domain, str):
                         # Parse string to list
@@ -605,7 +615,7 @@ class OdooToolHandler:
                         logger.debug(f"Parsed domain from string: {parsed_domain}")
                     else:
                         # Already a list
-                        parsed_domain = domain
+                        parsed_domain = domain  # type: ignore[assignment]
 
                 # Handle fields parameter - can be string or list
                 parsed_fields = fields
