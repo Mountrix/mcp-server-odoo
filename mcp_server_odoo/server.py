@@ -201,11 +201,147 @@ class OdooMCPServer:
                 self._register_tools()
 
             logger.info(f"Starting MCP server with HTTP transport on {host}:{port}...")
+            
+            # CRITICAL FIX: Add middleware to force Accept header before MCP validation
+            logger.info("🔧 [ACCEPT HEADER FIX] Adding middleware to force Accept header...")
+            try:
+                from starlette.middleware.base import BaseHTTPMiddleware
+                from starlette.requests import Request
+                from starlette.responses import Response
+                
+                class AcceptHeaderFixMiddleware(BaseHTTPMiddleware):
+                    """Middleware to force Accept header to application/x-ndjson for MCP compatibility."""
+                    
+                    async def dispatch(self, request: Request, call_next):
+                        # Log original Accept header
+                        original_accept = request.headers.get('accept', '<not found>')
+                        path = request.url.path
+                        method = request.method
+                        logger.info(f"🔍 [ACCEPT FIX] Request: {method} {path}")
+                        logger.info(f"🔍 [ACCEPT FIX] Original Accept header: {original_accept}")
+                        logger.info(f"🔍 [ACCEPT FIX] All headers: {dict(request.headers)}")
+                        
+                        # Force Accept header to application/x-ndjson
+                        if 'accept' not in request.headers:
+                            logger.info("🔧 [ACCEPT FIX] No Accept header found, adding application/x-ndjson")
+                            request.headers['accept'] = 'application/x-ndjson'
+                        elif 'application/x-ndjson' not in request.headers.get('accept', '').lower():
+                            logger.info(f"🔧 [ACCEPT FIX] Accept header doesn't contain application/x-ndjson, replacing")
+                            logger.info(f"🔧 [ACCEPT FIX] Old Accept: {request.headers.get('accept')}")
+                            request.headers['accept'] = 'application/x-ndjson'
+                            logger.info(f"🔧 [ACCEPT FIX] New Accept: {request.headers.get('accept')}")
+                        else:
+                            logger.info("✅ [ACCEPT FIX] Accept header already contains application/x-ndjson")
+                        
+                        # Verify the change
+                        final_accept = request.headers.get('accept', '<not found>')
+                        logger.info(f"✅ [ACCEPT FIX] Final Accept header before processing: {final_accept}")
+                        
+                        # Process request
+                        try:
+                            response = await call_next(request)
+                            logger.info(f"✅ [ACCEPT FIX] Request processed successfully, status: {response.status_code}")
+                            return response
+                        except Exception as e:
+                            logger.error(f"❌ [ACCEPT FIX] Error processing request: {e}", exc_info=True)
+                            raise
+                
+                # Add middleware to the FastMCP app
+                logger.info("🔧 [ACCEPT FIX] Attempting to add middleware to FastMCP app...")
+                logger.info(f"🔧 [ACCEPT FIX] App type: {type(self.app)}")
+                logger.info(f"🔧 [ACCEPT FIX] App attributes: {[a for a in dir(self.app) if not a.startswith('_')][:20]}")
+                
+                # Try to get the underlying Starlette/FastAPI app
+                if hasattr(self.app, 'app'):
+                    underlying_app = self.app.app
+                    logger.info(f"🔧 [ACCEPT FIX] Found underlying app: {type(underlying_app)}")
+                    
+                    # Add middleware
+                    if hasattr(underlying_app, 'add_middleware'):
+                        underlying_app.add_middleware(AcceptHeaderFixMiddleware)
+                        logger.info("✅✅✅ [ACCEPT FIX] SUCCESS: Added middleware via add_middleware")
+                    elif hasattr(underlying_app, 'middleware'):
+                        underlying_app.middleware('http')(AcceptHeaderFixMiddleware)
+                        logger.info("✅✅✅ [ACCEPT FIX] SUCCESS: Added middleware via @middleware decorator")
+                    else:
+                        logger.warning("⚠️ [ACCEPT FIX] App doesn't support add_middleware or @middleware, trying direct patch")
+                        # Direct patch: wrap the app's __call__ method
+                        if hasattr(underlying_app, '__call__'):
+                            original_call = underlying_app.__call__
+                            async def patched_call(scope, receive, send):
+                                if scope.get('type') == 'http':
+                                    path = scope.get('path', 'unknown')
+                                    method = scope.get('method', 'unknown')
+                                    logger.info(f"🔍 [ACCEPT FIX ASGI] Intercepted: {method} {path}")
+                                    
+                                    # Get original headers
+                                    original_headers = dict(scope.get('headers', []))
+                                    original_accept = original_headers.get(b'accept', b'<not found>')
+                                    logger.info(f"🔍 [ACCEPT FIX ASGI] Original Accept: {original_accept}")
+                                    
+                                    # Force Accept header
+                                    headers = []
+                                    accept_found = False
+                                    for k, v in scope.get('headers', []):
+                                        if k.lower() == b'accept':
+                                            headers.append((b'accept', b'application/x-ndjson'))
+                                            accept_found = True
+                                            logger.info(f"🔧 [ACCEPT FIX ASGI] Replaced Accept: {v} -> application/x-ndjson")
+                                        else:
+                                            headers.append((k, v))
+                                    
+                                    if not accept_found:
+                                        headers.append((b'accept', b'application/x-ndjson'))
+                                        logger.info("🔧 [ACCEPT FIX ASGI] Added Accept: application/x-ndjson")
+                                    
+                                    scope['headers'] = headers
+                                    logger.info(f"✅ [ACCEPT FIX ASGI] Modified scope headers count: {len(headers)}")
+                                
+                                return await original_call(scope, receive, send)
+                            
+                            underlying_app.__call__ = patched_call
+                            logger.info("✅✅✅ [ACCEPT FIX] SUCCESS: Patched app.__call__ directly")
+                else:
+                    logger.warning("⚠️ [ACCEPT FIX] App doesn't have 'app' attribute, trying to patch self.app directly")
+                    if hasattr(self.app, '__call__'):
+                        original_call = self.app.__call__
+                        async def patched_app_call(scope, receive, send):
+                            if scope.get('type') == 'http':
+                                path = scope.get('path', 'unknown')
+                                method = scope.get('method', 'unknown')
+                                logger.info(f"🔍 [ACCEPT FIX APP] Intercepted: {method} {path}")
+                                
+                                headers = []
+                                accept_found = False
+                                for k, v in scope.get('headers', []):
+                                    if k.lower() == b'accept':
+                                        headers.append((b'accept', b'application/x-ndjson'))
+                                        accept_found = True
+                                        logger.info(f"🔧 [ACCEPT FIX APP] Replaced Accept: {v} -> application/x-ndjson")
+                                    else:
+                                        headers.append((k, v))
+                                
+                                if not accept_found:
+                                    headers.append((b'accept', b'application/x-ndjson'))
+                                    logger.info("🔧 [ACCEPT FIX APP] Added Accept: application/x-ndjson")
+                                
+                                scope['headers'] = headers
+                                logger.info(f"✅ [ACCEPT FIX APP] Modified scope headers")
+                            
+                            return await original_call(scope, receive, send)
+                        
+                        self.app.__call__ = patched_app_call
+                        logger.info("✅✅✅ [ACCEPT FIX] SUCCESS: Patched self.app.__call__ directly")
+                
+            except Exception as e:
+                logger.error(f"❌ [ACCEPT FIX] ERROR adding middleware: {e}", exc_info=True)
+                logger.error("⚠️ [ACCEPT FIX] Continuing without middleware fix (may cause 406 errors)")
 
             # Update FastMCP settings for host and port
             self.app.settings.host = host
             self.app.settings.port = port
 
+            logger.info("🚀 [ACCEPT FIX] Starting server with Accept header fix applied...")
             # Use the specific streamable HTTP async method
             await self.app.run_streamable_http_async()
 
