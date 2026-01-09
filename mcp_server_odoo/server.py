@@ -441,18 +441,18 @@ class OdooMCPServer:
                                                     method = scope.get('method', 'unknown')
                                                     logger.info(f"🔍🔍🔍 [ACCEPT FIX ASGI] INTERCEPTED: {method} {path}")
                                                     
-                                                    # Force Accept header
+                                                    # Force Accept header - MCP requires text/event-stream for SSE streaming
                                                     headers = []
                                                     for k, v in scope.get('headers', []):
                                                         if k.lower() == b'accept':
-                                                            headers.append((b'accept', b'application/x-ndjson'))
-                                                            logger.info(f"🔧 [ACCEPT FIX ASGI] FORCED Accept: application/x-ndjson")
+                                                            headers.append((b'accept', b'text/event-stream, application/x-ndjson, application/json'))
+                                                            logger.info(f"🔧 [ACCEPT FIX ASGI] FORCED Accept: text/event-stream, application/x-ndjson, application/json")
                                                         else:
                                                             headers.append((k, v))
                                                     
                                                     if not any(k.lower() == b'accept' for k, v in headers):
-                                                        headers.append((b'accept', b'application/x-ndjson'))
-                                                        logger.info("🔧 [ACCEPT FIX ASGI] ADDED Accept: application/x-ndjson")
+                                                        headers.append((b'accept', b'text/event-stream, application/x-ndjson, application/json'))
+                                                        logger.info("🔧 [ACCEPT FIX ASGI] ADDED Accept: text/event-stream, application/x-ndjson, application/json")
                                                     
                                                     scope['headers'] = headers
                                                     logger.info(f"✅ [ACCEPT FIX ASGI] Modified headers")
@@ -477,18 +477,18 @@ class OdooMCPServer:
                                                             method = scope.get('method', 'unknown')
                                                             logger.info(f"🔍🔍🔍 [ACCEPT FIX ASGI] INTERCEPTED: {method} {path}")
                                                             
-                                                            # Force Accept header
+                                                            # Force Accept header - MCP requires text/event-stream for SSE streaming
                                                             headers = []
                                                             for k, v in scope.get('headers', []):
                                                                 if k.lower() == b'accept':
-                                                                    headers.append((b'accept', b'application/x-ndjson'))
-                                                                    logger.info(f"🔧 [ACCEPT FIX ASGI] FORCED Accept: application/x-ndjson")
+                                                                    headers.append((b'accept', b'text/event-stream, application/x-ndjson, application/json'))
+                                                                    logger.info(f"🔧 [ACCEPT FIX ASGI] FORCED Accept: text/event-stream, application/x-ndjson, application/json")
                                                                 else:
                                                                     headers.append((k, v))
                                                             
                                                             if not any(k.lower() == b'accept' for k, v in headers):
-                                                                headers.append((b'accept', b'application/x-ndjson'))
-                                                                logger.info("🔧 [ACCEPT FIX ASGI] ADDED Accept: application/x-ndjson")
+                                                                headers.append((b'accept', b'text/event-stream, application/x-ndjson, application/json'))
+                                                                logger.info("🔧 [ACCEPT FIX ASGI] ADDED Accept: text/event-stream, application/x-ndjson, application/json")
                                                             
                                                             scope['headers'] = headers
                                                             logger.info(f"✅ [ACCEPT FIX ASGI] Modified headers")
@@ -523,215 +523,136 @@ class OdooMCPServer:
             self.app.settings.host = host
             self.app.settings.port = port
 
-            # CRITICAL FIX: Patch StreamableHTTPSessionManager.__call__ at CLASS level
-            # This will intercept ALL requests before validation happens
-            logger.info("🔧🔧🔧 [ACCEPT FIX] Patching StreamableHTTPSessionManager at CLASS level...")
+            # CRITICAL FIX: Multi-layer aggressive patching
+            # Patch at multiple levels to ensure we catch the request before validation
+            logger.info("🔧🔧🔧 [ACCEPT FIX] Starting AGGRESSIVE multi-layer patching...")
+            
+            def force_accept_header(scope):
+                """Helper to force Accept header in ASGI scope"""
+                if scope.get('type') != 'http':
+                    return
+                
+                path = scope.get('path', 'unknown')
+                method = scope.get('method', 'unknown')
+                logger.info(f"🔍🔍🔍 [ACCEPT FIX] INTERCEPTING: {method} {path}")
+                
+                headers = list(scope.get('headers', []))
+                original_accept = None
+                
+                # Find existing Accept header
+                for i, (k, v) in enumerate(headers):
+                    if k.lower() == b'accept':
+                        original_accept = v
+                        try:
+                            accept_str = v.decode('utf-8') if isinstance(v, bytes) else str(v)
+                            logger.info(f"🔍 [ACCEPT FIX] Found Accept: '{accept_str}'")
+                        except:
+                            logger.info(f"🔍 [ACCEPT FIX] Found Accept: {v}")
+                        # Replace it with text/event-stream for MCP streamable HTTP (SSE streaming)
+                        # MCP requires text/event-stream for GET requests, not just application/x-ndjson
+                        headers[i] = (b'accept', b'text/event-stream, application/x-ndjson, application/json')
+                        logger.info("🔧 [ACCEPT FIX] REPLACED Accept header with text/event-stream, application/x-ndjson, application/json")
+                        break
+                
+                if original_accept is None:
+                    headers.append((b'accept', b'text/event-stream, application/x-ndjson, application/json'))
+                    logger.info("🔧 [ACCEPT FIX] ADDED Accept header with text/event-stream, application/x-ndjson, application/json")
+                
+                scope['headers'] = headers
+                logger.info("✅ [ACCEPT FIX] Modified scope headers")
+            
+            # Strategy 1: Patch StreamableHTTPSessionManager.handle_request - THIS IS THE ACTUAL METHOD
             try:
                 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-                logger.info(f"🔧 [ACCEPT FIX] Found StreamableHTTPSessionManager: {StreamableHTTPSessionManager}")
-                logger.info(f"🔧 [ACCEPT FIX] StreamableHTTPSessionManager type: {type(StreamableHTTPSessionManager)}")
-                logger.info(f"🔧 [ACCEPT FIX] Has __call__: {hasattr(StreamableHTTPSessionManager, '__call__')}")
+                logger.info(f"🔧 [ACCEPT FIX] Strategy 1: Patching StreamableHTTPSessionManager.handle_request")
                 
-                # Check if already patched
-                if hasattr(StreamableHTTPSessionManager.__call__, '_accept_patched'):
-                    logger.info("✅ [ACCEPT FIX] StreamableHTTPSessionManager.__call__ already patched")
+                if hasattr(StreamableHTTPSessionManager, 'handle_request'):
+                    original_handle = StreamableHTTPSessionManager.handle_request
+                    if not hasattr(original_handle, '_accept_patched'):
+                        async def patched_handle_request(self_instance, scope, receive, send):
+                            force_accept_header(scope)
+                            return await original_handle(self_instance, scope, receive, send)
+                        
+                        patched_handle_request._accept_patched = True
+                        StreamableHTTPSessionManager.handle_request = patched_handle_request
+                        logger.info("✅✅✅ [ACCEPT FIX] Strategy 1: SUCCESS - Patched handle_request")
+                    else:
+                        logger.info("✅ [ACCEPT FIX] Strategy 1: Already patched")
                 else:
-                    # Save original __call__
+                    logger.warning("⚠️ [ACCEPT FIX] Strategy 1: handle_request not found")
+                    
+                # Also patch __call__ as backup
+                if not hasattr(StreamableHTTPSessionManager.__call__, '_accept_patched'):
                     original_call = StreamableHTTPSessionManager.__call__
-                    logger.info(f"🔧 [ACCEPT FIX] Original __call__ type: {type(original_call)}")
-                    logger.info(f"🔧 [ACCEPT FIX] Original __call__: {original_call}")
-                    
-                    # Patch __call__ to intercept ASGI requests
-                    async def patched_session_manager_call(self_instance, scope, receive, send):
-                        if scope.get('type') == 'http':
-                            path = scope.get('path', 'unknown')
-                            method = scope.get('method', 'unknown')
-                            logger.info(f"🔍🔍🔍 [ACCEPT FIX ASGI] INTERCEPTED: {method} {path}")
-                            
-                            # Get original Accept header
-                            original_accept = None
-                            all_headers_list = list(scope.get('headers', []))
-                            logger.info(f"🔍 [ACCEPT FIX ASGI] Total headers received: {len(all_headers_list)}")
-                            
-                            for k, v in all_headers_list:
-                                if k.lower() == b'accept':
-                                    original_accept = v
-                                    try:
-                                        accept_str = v.decode('utf-8') if isinstance(v, bytes) else str(v)
-                                        logger.info(f"🔍 [ACCEPT FIX ASGI] Original Accept: {accept_str}")
-                                    except:
-                                        logger.info(f"🔍 [ACCEPT FIX ASGI] Original Accept: {v}")
-                                    break
-                            
-                            if original_accept is None:
-                                logger.info("🔍 [ACCEPT FIX ASGI] No Accept header found in request")
-                            
-                            # Force Accept header to application/x-ndjson
-                            headers = []
-                            accept_found = False
-                            for k, v in all_headers_list:
-                                if k.lower() == b'accept':
-                                    headers.append((b'accept', b'application/x-ndjson'))
-                                    accept_found = True
-                                    try:
-                                        v_str = v.decode('utf-8') if isinstance(v, bytes) else str(v)
-                                        logger.info(f"🔧 [ACCEPT FIX ASGI] REPLACED: '{v_str}' -> 'application/x-ndjson'")
-                                    except:
-                                        logger.info(f"🔧 [ACCEPT FIX ASGI] REPLACED: {v} -> application/x-ndjson")
-                                else:
-                                    headers.append((k, v))
-                            
-                            if not accept_found:
-                                headers.append((b'accept', b'application/x-ndjson'))
-                                logger.info("🔧 [ACCEPT FIX ASGI] ADDED: application/x-ndjson")
-                            
-                            scope['headers'] = headers
-                            
-                            # Verify
-                            new_accept = dict(headers).get(b'accept', b'<not found>')
-                            try:
-                                new_accept_str = new_accept.decode('utf-8') if isinstance(new_accept, bytes) else str(new_accept)
-                                logger.info(f"✅ [ACCEPT FIX ASGI] Final Accept: '{new_accept_str}'")
-                            except:
-                                logger.info(f"✅ [ACCEPT FIX ASGI] Final Accept: {new_accept}")
-                            logger.info(f"✅ [ACCEPT FIX ASGI] Total headers after modification: {len(headers)}")
-                        
-                        # Call original with modified scope
-                        logger.info("🚀 [ACCEPT FIX ASGI] Calling original StreamableHTTPSessionManager.__call__...")
+                    async def patched_call(self_instance, scope, receive, send):
+                        force_accept_header(scope)
                         return await original_call(self_instance, scope, receive, send)
-                    
-                    # Mark as patched
-                    patched_session_manager_call._accept_patched = True
-                    
-                    # Replace the method at class level
-                    StreamableHTTPSessionManager.__call__ = patched_session_manager_call
-                    logger.info("✅✅✅ [ACCEPT FIX] SUCCESS: Patched StreamableHTTPSessionManager.__call__ at CLASS level")
-                    logger.info("✅✅✅ [ACCEPT FIX] All future instances will use patched __call__")
-                
+                    patched_call._accept_patched = True
+                    StreamableHTTPSessionManager.__call__ = patched_call
+                    logger.info("✅✅✅ [ACCEPT FIX] Strategy 1: Also patched __call__ as backup")
             except Exception as e:
-                logger.error(f"❌ [ACCEPT FIX] Error patching StreamableHTTPSessionManager: {e}", exc_info=True)
-                import traceback
-                traceback.print_exc(file=sys.stderr)
+                logger.error(f"❌ [ACCEPT FIX] Strategy 1 failed: {e}", exc_info=True)
             
-            async def patch_app_when_ready():
-                """Periodically check for app and patch it"""
-                import asyncio
-                import sys
+            # Strategy 2: Patch StreamableHTTPServerTransport if it exists
+            try:
+                from mcp.server.streamable_http_manager import StreamableHTTPServerTransport
+                logger.info(f"🔧 [ACCEPT FIX] Strategy 2: Patching StreamableHTTPServerTransport")
                 
-                for attempt in range(20):  # Try for 4 seconds (20 * 0.2s)
-                    await asyncio.sleep(0.2)
-                    try:
-                        logger.info(f"🔧 [ACCEPT FIX DELAYED] Attempt {attempt + 1}/20 to find app...")
+                if hasattr(StreamableHTTPServerTransport, '__call__'):
+                    if not hasattr(StreamableHTTPServerTransport.__call__, '_accept_patched'):
+                        original_transport_call = StreamableHTTPServerTransport.__call__
                         
-                        # Check streamable_http_manager module
-                        if 'mcp.server.streamable_http_manager' in sys.modules:
-                            manager = sys.modules['mcp.server.streamable_http_manager']
-                            logger.info(f"🔧 [ACCEPT FIX DELAYED] Found manager module: {type(manager)}")
-                            
-                            # Check for StreamableHTTPSessionManager instances
-                            for attr_name in dir(manager):
-                                if 'SessionManager' in attr_name or 'Transport' in attr_name:
-                                    attr = getattr(manager, attr_name)
-                                    logger.info(f"🔧 [ACCEPT FIX DELAYED] Found {attr_name}: {type(attr)}")
-                                    
-                                    # If it's a class, patch its __call__ or methods
-                                    if isinstance(attr, type):
-                                        # Patch __call__ if it exists
-                                        if hasattr(attr, '__call__'):
-                                            original_call = attr.__call__
-                                            if not hasattr(original_call, '_accept_patched'):
-                                                async def patched_class_call(self_instance, scope, receive, send):
-                                                    if scope.get('type') == 'http':
-                                                        path = scope.get('path', 'unknown')
-                                                        method = scope.get('method', 'unknown')
-                                                        logger.info(f"🔍🔍🔍 [ACCEPT FIX DELAYED ASGI] INTERCEPTED: {method} {path}")
-                                                        
-                                                        # Force Accept header
-                                                        headers = []
-                                                        for k, v in scope.get('headers', []):
-                                                            if k.lower() == b'accept':
-                                                                headers.append((b'accept', b'application/x-ndjson'))
-                                                                logger.info(f"🔧 [ACCEPT FIX DELAYED ASGI] FORCED Accept")
-                                                            else:
-                                                                headers.append((k, v))
-                                                        
-                                                        if not any(k.lower() == b'accept' for k, v in headers):
-                                                            headers.append((b'accept', b'application/x-ndjson'))
-                                                            logger.info("🔧 [ACCEPT FIX DELAYED ASGI] ADDED Accept")
-                                                        
-                                                        scope['headers'] = headers
-                                                        logger.info(f"✅ [ACCEPT FIX DELAYED ASGI] Modified headers")
-                                                    
-                                                    return await original_call(self_instance, scope, receive, send)
-                                                
-                                                patched_class_call._accept_patched = True
-                                                attr.__call__ = patched_class_call
-                                                logger.info(f"✅✅✅ [ACCEPT FIX DELAYED] Patched {attr_name}.__call__")
-                                        
-                                        # Also check for app attribute in instances
-                                        # We need to patch when instances are created
-                                        original_init = getattr(attr, '__init__', None)
-                                        if original_init:
-                                            def patched_init(self_instance, *args, **kwargs):
-                                                logger.info(f"🔧 [ACCEPT FIX DELAYED] {attr_name}.__init__ called")
-                                                result = original_init(self_instance, *args, **kwargs)
-                                                
-                                                # Patch app if it exists
-                                                for app_attr in ['app', '_app', 'asgi_app', '_asgi_app']:
-                                                    if hasattr(self_instance, app_attr):
-                                                        app = getattr(self_instance, app_attr)
-                                                        if hasattr(app, '__call__') and not hasattr(app.__call__, '_accept_patched'):
-                                                            original_app_call = app.__call__
-                                                            async def patched_app(scope, receive, send):
-                                                                if scope.get('type') == 'http':
-                                                                    headers = [(k, b'application/x-ndjson' if k.lower() == b'accept' else v) 
-                                                                             for k, v in scope.get('headers', [])]
-                                                                    if not any(k.lower() == b'accept' for k, v in headers):
-                                                                        headers.append((b'accept', b'application/x-ndjson'))
-                                                                    scope['headers'] = headers
-                                                                    logger.info(f"🔍 [ACCEPT FIX DELAYED] Modified Accept for {scope.get('path')}")
-                                                                return await original_app_call(scope, receive, send)
-                                                            
-                                                            patched_app._accept_patched = True
-                                                            app.__call__ = patched_app
-                                                            logger.info(f"✅✅✅ [ACCEPT FIX DELAYED] Patched {app_attr}.__call__")
-                                                            break
-                                                
-                                                return result
-                                            
-                                            attr.__init__ = patched_init
-                                            logger.info(f"✅✅✅ [ACCEPT FIX DELAYED] Patched {attr_name}.__init__")
+                        async def patched_transport_call(self_instance, scope, receive, send):
+                            force_accept_header(scope)
+                            return await original_transport_call(self_instance, scope, receive, send)
                         
-                        # Also check for app in the manager module itself
-                        if hasattr(manager, 'app'):
-                            app = manager.app
-                            if hasattr(app, '__call__') and not hasattr(app.__call__, '_accept_patched'):
-                                logger.info(f"✅✅✅ [ACCEPT FIX DELAYED] Found app in manager, patching...")
-                                original_call = app.__call__
-                                async def patched(scope, receive, send):
-                                    if scope.get('type') == 'http':
-                                        headers = [(k, b'application/x-ndjson' if k.lower() == b'accept' else v) 
-                                                 for k, v in scope.get('headers', [])]
-                                        if not any(k.lower() == b'accept' for k, v in headers):
-                                            headers.append((b'accept', b'application/x-ndjson'))
-                                        scope['headers'] = headers
-                                        logger.info(f"🔍 [ACCEPT FIX DELAYED] Modified Accept for {scope.get('path')}")
-                                    return await original_call(scope, receive, send)
-                                
-                                patched._accept_patched = True
-                                app.__call__ = patched
-                                logger.info("✅✅✅ [ACCEPT FIX DELAYED] Patched manager.app.__call__")
-                                break  # Success, stop trying
-                        
-                    except Exception as e:
-                        if attempt < 3:  # Only log first few errors
-                            logger.debug(f"[ACCEPT FIX DELAYED] Attempt {attempt + 1} error: {e}")
+                        patched_transport_call._accept_patched = True
+                        StreamableHTTPServerTransport.__call__ = patched_transport_call
+                        logger.info("✅✅✅ [ACCEPT FIX] Strategy 2: SUCCESS")
+                    else:
+                        logger.info("✅ [ACCEPT FIX] Strategy 2: Already patched")
+            except Exception as e:
+                logger.debug(f"[ACCEPT FIX] Strategy 2: {e}")
+            
+            # Strategy 3: Patch any function in streamable_http_manager that might validate
+            try:
+                import mcp.server.streamable_http_manager as manager_module
+                logger.info(f"🔧 [ACCEPT FIX] Strategy 3: Scanning manager module for validation functions")
                 
-                logger.info("🔧 [ACCEPT FIX DELAYED] Finished patching attempts")
+                # Look for functions that might validate Accept header
+                for attr_name in dir(manager_module):
+                    if attr_name.startswith('_'):
+                        continue
+                    attr = getattr(manager_module, attr_name)
+                    if callable(attr) and hasattr(attr, '__code__'):
+                        try:
+                            # Check if function code mentions 'accept' or '406'
+                            code_str = str(attr.__code__.co_names) + str(attr.__code__.co_consts)
+                            if 'accept' in code_str.lower() or '406' in code_str:
+                                logger.info(f"🔧 [ACCEPT FIX] Found potential validator: {attr_name}")
+                                # Wrap it to bypass validation
+                                original_func = attr
+                                def bypass_wrapper(*args, **kwargs):
+                                    # If it's checking Accept, modify the args/kwargs
+                                    if args and isinstance(args[0], dict) and 'headers' in args[0]:
+                                        scope = args[0]
+                                        force_accept_header(scope)
+                                    return original_func(*args, **kwargs)
+                                setattr(manager_module, attr_name, bypass_wrapper)
+                                logger.info(f"✅✅✅ [ACCEPT FIX] Strategy 3: Patched {attr_name}")
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"[ACCEPT FIX] Strategy 3: {e}")
+            
+            # Strategy 4: DISABLED - Request.__init__ has multiple signatures and causes errors
+            # Strategy 1 (StreamableHTTPSessionManager) is already intercepting correctly
+            logger.info("🔧 [ACCEPT FIX] Strategy 4: Skipped (Request.__init__ patching causes signature errors)")
+            
+            logger.info("✅✅✅ [ACCEPT FIX] All patching strategies applied")
             
             logger.info("🚀 [ACCEPT FIX] Starting server with Accept header fix applied...")
-            logger.info("🚀 [ACCEPT FIX] StreamableHTTPSessionManager.__call__ should be patched")
-            # Use the original method (the patch is at class level, so it will work)
+            # Use the original method (the patches are at class/module level, so they will work)
             await self.app.run_streamable_http_async()
 
         except KeyboardInterrupt:

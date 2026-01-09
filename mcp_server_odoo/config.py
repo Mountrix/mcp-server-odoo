@@ -32,7 +32,7 @@ class OdooConfig:
     max_smart_fields: int = 15
 
     # MCP transport configuration
-    transport: Literal["stdio", "streamable-http"] = "stdio"
+    transport: Literal["stdio", "streamable-http", "http-wrapper"] = "stdio"
     host: str = "localhost"
     port: int = 8000
 
@@ -75,7 +75,7 @@ class OdooConfig:
             )
 
         # Validate transport
-        valid_transports = {"stdio", "streamable-http"}
+        valid_transports = {"stdio", "streamable-http", "http-wrapper"}
         if self.transport not in valid_transports:
             raise ValueError(
                 f"Invalid transport: {self.transport}. "

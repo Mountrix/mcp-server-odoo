@@ -62,9 +62,9 @@ For more information, visit: https://github.com/ivnvxd/mcp-server-odoo""",
 
     parser.add_argument(
         "--transport",
-        choices=["stdio", "streamable-http"],
+        choices=["stdio", "streamable-http", "http-wrapper"],
         default=os.getenv("ODOO_MCP_TRANSPORT", "stdio"),
-        help="Transport type to use (default: stdio)",
+        help="Transport type to use (default: stdio). Use 'http-wrapper' for Kubernetes/proxy deployments",
     )
 
     parser.add_argument(
@@ -103,6 +103,10 @@ For more information, visit: https://github.com/ivnvxd/mcp-server-odoo""",
             asyncio.run(server.run_stdio())
         elif config.transport == "streamable-http":
             asyncio.run(server.run_http(host=config.host, port=config.port))
+        elif config.transport == "http-wrapper":
+            # Use HTTP wrapper that bypasses Accept header validation issues
+            from .http_wrapper import run_http_wrapper
+            asyncio.run(run_http_wrapper(host=config.host, port=config.port))
         else:
             raise ValueError(f"Unsupported transport: {config.transport}")
 
